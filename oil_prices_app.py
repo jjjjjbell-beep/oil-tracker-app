@@ -1,0 +1,280 @@
+# oil_prices_app.py
+# Requirements: streamlit, requests, pandas, plotly
+
+import streamlit as st
+import requests
+import pandas as pd
+import plotly.graph_objects as go
+from datetime import date, timedelta
+
+# ── CONFIG ────────────────────────────────────────────────────────────────────
+SUPABASE_URL = st.secrets["SUPABASE_URL"]
+SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
+EIA_API_KEY  = st.secrets["EIA_API_KEY"]
+
+HEADERS = {
+    "apikey": SUPABASE_KEY,
+    "Authorization": f"Bearer {SUPABASE_KEY}",
+    "Content-Type": "application/json",
+}
+
+# ── Supabase REST helpers ─────────────────────────────────────────────────────
+def get_existing_dates() -> set:
+    url = f"{SUPABASE_URL}/rest/v1/oil_prices?select=date"
+    resp = requests.get(url, headers=HEADERS, timeout=60)
+    resp.raise_for_status()
+    return {row["date"] for row in resp.json()}
+
+def upsert_rows(rows: list):
+    if not rows:
+        return
+    url = f"{SUPABASE_URL}/rest/v1/oil_prices"
+    headers = {**HEADERS, "Prefer": "resolution=merge-duplicates,return=minimal"}
+    resp = requests.post(url, json=rows, headers=headers, timeout=30)
+    resp.raise_for_status()
+
+def load_all_data() -> pd.DataFrame:
+    all_rows = []
+    offset = 0
+    page_size = 1000
+    while True:
+        url = f"{SUPABASE_URL}/rest/v1/oil_prices?select=*&order=date.asc&limit={page_size}&offset={offset}"
+        headers = {**HEADERS, "Prefer": "count=exact"}
+        resp = requests.get(url, headers=headers, timeout=60)
+        resp.raise_for_status()
+        rows = resp.json()
+        all_rows.extend(rows)
+        if len(rows) < page_size:
+            break
+        offset += page_size
+    df = pd.DataFrame(all_rows)
+    if df.empty:
+        return df
+    df["date"] = pd.to_datetime(df["date"])
+    for col in ["wti", "brent", "wcs"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+    return df
+
+# ── EIA fetch (paginated) ─────────────────────────────────────────────────────
+def fetch_eia_prices(series_id: str, start: str, end: str) -> dict:
+    result = {}
+    offset = 0
+    page_size = 5000
+    while True:
+        url = (
+            f"https://api.eia.gov/v2/petroleum/pri/spt/data/"
+            f"?api_key={EIA_API_KEY}"
+            f"&frequency=daily&data[0]=value"
+            f"&facets[series][]={series_id}"
+            f"&start={start}&end={end}"
+            f"&sort[0][column]=period&sort[0][direction]=asc"
+            f"&length={page_size}&offset={offset}"
+        )
+        resp = requests.get(url, timeout=60)
+        resp.raise_for_status()
+        response = resp.json().get("response", {})
+        data = response.get("data", [])
+        for row in data:
+            if row["value"] is not None:
+                result[row["period"]] = row["value"]
+        total = int(response.get("total", 0))
+        offset += page_size
+        if offset >= total or not data:
+            break
+    return result
+
+# ── Alberta WCS fetch ─────────────────────────────────────────────────────────
+def fetch_wcs_prices() -> dict:
+    url = "https://economicdashboard.alberta.ca/api/oilprice?type=wcs"
+    try:
+        resp = requests.get(url, timeout=60)
+        resp.raise_for_status()
+        result = {}
+        for entry in resp.json():
+            y = entry.get("year")
+            m = entry.get("month")
+            p = entry.get("price") or entry.get("value")
+            if y and m and p:
+                d = date(int(y), int(m), 1).isoformat()
+                result[d] = float(p)
+        return result
+    except Exception as e:
+        st.warning(f"WCS fetch failed: {e}")
+        return {}
+
+# ── Frankfurter: fetch USD/CAD rate ──────────────────────────────────────────
+def fetch_usdcad_rate() -> float:
+    """Fetch latest USD/CAD rate from Frankfurter (free, no API key)."""
+    try:
+        resp = requests.get("https://api.frankfurter.dev/v1/latest?base=USD&symbols=CAD", timeout=60)
+        resp.raise_for_status()
+        return float(resp.json()["rates"]["CAD"])
+    except Exception:
+        return 1.38  # fallback if API is unavailable
+
+# ── Sync ──────────────────────────────────────────────────────────────────────
+def sync_data():
+    existing = get_existing_dates()
+    today = date.today().isoformat()
+    start = "2015-01-01"
+    with st.spinner("Fetching WTI & Brent from EIA..."):
+        wti_data   = fetch_eia_prices("RWTC",  start, today)
+        brent_data = fetch_eia_prices("RBRTE", start, today)
+    with st.spinner("Fetching WCS from Alberta Economic Dashboard..."):
+        wcs_data = fetch_wcs_prices()
+    all_dates = set(wti_data) | set(brent_data)
+    new_rows = []
+    for d in sorted(all_dates):
+        if d not in existing:
+            wcs_key = d[:7] + "-01"
+            new_rows.append({
+                "date":  d,
+                "wti":   wti_data.get(d),
+                "brent": brent_data.get(d),
+                "wcs":   wcs_data.get(wcs_key),
+            })
+    if new_rows:
+        with st.spinner(f"Saving {len(new_rows)} rows to Supabase..."):
+            for i in range(0, len(new_rows), 500):
+                upsert_rows(new_rows[i:i+500])
+        st.success(f"✅ Added {len(new_rows)} new records.")
+    else:
+        st.info("✅ Already up to date.")
+
+# ── Chart ─────────────────────────────────────────────────────────────────────
+def render_chart(df, start_date, end_date, benchmarks, fx_rate=1.0, currency='USD'):
+    mask = (df["date"] >= pd.Timestamp(start_date)) & (df["date"] <= pd.Timestamp(end_date))
+    filtered = df[mask]
+    colors = {"wti": "#F4A261", "brent": "#2A9D8F", "wcs": "#E76F51"}
+    labels = {"wti": "WTI", "brent": "Brent", "wcs": "WCS (monthly avg)"}
+    fig = go.Figure()
+    sym = "CA$" if currency == "CAD" else "$"
+    for b in benchmarks:
+        col_data = (filtered[b] * fx_rate).dropna()
+        fig.add_trace(go.Scatter(
+            x=filtered.loc[col_data.index, "date"],
+            y=col_data,
+            name=labels[b],
+            line=dict(color=colors[b], width=2),
+            hovertemplate=f"<b>{labels[b]}</b><br>Date: %{{x|%b %d, %Y}}<br>Price: {sym}%{{y:.2f}}/bbl<extra></extra>"
+        ))
+    fig.update_layout(
+        title=f"Oil Benchmark Prices ({currency}/bbl)",
+        xaxis_title="Date", yaxis_title=f"Price ({currency}/bbl)",
+        hovermode="x unified",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        plot_bgcolor="#0E1117", paper_bgcolor="#0E1117",
+        font=dict(color="white"),
+        xaxis=dict(gridcolor="#333"), yaxis=dict(gridcolor="#333"),
+        height=500,
+    )
+    st.plotly_chart(fig, use_container_width=True, key="main_chart")
+
+# ── Safe metric helper ────────────────────────────────────────────────────────
+def show_metric(col, label, df, field, date_fmt="%b %d, %Y"):
+    subset = df.dropna(subset=[field])
+    if subset.empty:
+        col.metric(label, "N/A", "No data yet")
+    else:
+        latest = subset.iloc[-1]
+        col.metric(label, f"${latest[field]:.2f}", f"as of {latest['date'].strftime(date_fmt)}")
+
+# ── Main ──────────────────────────────────────────────────────────────────────
+def main():
+    st.set_page_config(page_title="Oil Price Dashboard", page_icon="🛢️", layout="wide")
+    st.title("🛢️ Oil Price Dashboard")
+    st.caption("WTI & Brent: daily via EIA API · WCS: monthly average via Alberta Economic Dashboard")
+
+    col1, col2 = st.columns([3, 1])
+    with col2:
+        if st.button("🔄 Refresh Data", use_container_width=True):
+            sync_data()
+            st.rerun()
+
+    # Currency toggle
+    currency = st.radio("Currency", ["USD", "CAD"], horizontal=True)
+    fx_rate = 1.0
+    if currency == "CAD":
+        fx_rate = fetch_usdcad_rate()
+        st.caption(f"💱 Using USD/CAD rate: {fx_rate:.4f} (via Frankfurter, updated daily)")
+
+    df = load_all_data()
+
+    if df.empty:
+        st.warning("No data yet — click **Refresh Data** to load prices.")
+        return
+
+    # Latest prices
+    st.subheader("Latest Prices")
+    m1, m2, m3 = st.columns(3)
+    show_metric(m1, "WTI",   df, "wti")
+    show_metric(m2, "Brent", df, "brent")
+    show_metric(m3, "WCS",   df, "wcs", date_fmt="%b %Y")
+
+    st.divider()
+
+    # Chart controls
+    st.subheader("Historical Chart")
+
+    min_date = df["date"].min().date()
+    max_date = df["date"].max().date()
+    default_start = max(min_date, max_date - timedelta(days=365))
+
+    benchmarks = st.multiselect("Benchmarks", ["wti", "brent", "wcs"], default=["wti", "brent", "wcs"])
+
+    # Date range slider
+    st.markdown("**Adjust Date Range**")
+    slider_range = st.slider(
+        label="Date Range",
+        min_value=min_date,
+        max_value=max_date,
+        value=(default_start, max_date),
+        format="YYYY-MM-DD",
+        label_visibility="collapsed"
+    )
+    start_date, end_date = slider_range[0], slider_range[1]
+
+    if benchmarks:
+        render_chart(df, start_date, end_date, benchmarks, fx_rate, currency)
+    else:
+        st.info("Select at least one benchmark above.")
+
+    # WTI-WCS differential
+    if "wti" in benchmarks and "wcs" in benchmarks:
+        wcs_available = df.dropna(subset=["wcs"])
+        if not wcs_available.empty:
+            st.subheader("WTI–WCS Differential")
+            diff_df = wcs_available.copy()
+            diff_df["month"] = diff_df["date"].dt.to_period("M")
+            wti_monthly = df.copy()
+            wti_monthly["month"] = wti_monthly["date"].dt.to_period("M")
+            wti_avg = wti_monthly.groupby("month")["wti"].mean().reset_index()
+            merged = diff_df[["month","wcs"]].drop_duplicates("month").merge(wti_avg, on="month")
+            merged["differential"] = merged["wti"] - merged["wcs"]
+            merged["date"] = merged["month"].dt.to_timestamp()
+            fig2 = go.Figure()
+            fig2.add_trace(go.Bar(
+                x=merged["date"], y=merged["differential"],
+                name="WTI–WCS Differential", marker_color="#E76F51",
+                hovertemplate="<b>Differential</b><br>%{x|%b %Y}<br>$%{y:.2f}/bbl<extra></extra>"
+            ))
+            fig2.update_layout(
+                title="WTI–WCS Monthly Differential (USD/bbl)",
+                plot_bgcolor="#0E1117", paper_bgcolor="#0E1117",
+                font=dict(color="white"),
+                xaxis=dict(gridcolor="#333"), yaxis=dict(gridcolor="#333"),
+                height=350,
+            )
+            st.plotly_chart(fig2, use_container_width=True, key="diff_chart")
+
+    # Raw data + download
+    with st.expander("📋 View / Download Raw Data"):
+        display_df = df.copy()
+        display_df["date"] = display_df["date"].dt.strftime("%Y-%m-%d")
+        st.dataframe(display_df, use_container_width=True)
+        csv = display_df.to_csv(index=False).encode("utf-8")
+        st.download_button("⬇️ Download CSV", csv, "oil_prices.csv", "text/csv")
+
+if __name__ == "__main__":
+    main()
