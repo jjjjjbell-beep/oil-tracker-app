@@ -56,6 +56,19 @@ def load_all_data() -> pd.DataFrame:
             df[col] = pd.to_numeric(df[col], errors="coerce")
     return df
 
+def get_latest_date_in_db() -> date | None:
+    """Return the most recent date stored in Supabase, or None if empty."""
+    url = f"{SUPABASE_URL}/rest/v1/oil_prices?select=date&order=date.desc&limit=1"
+    try:
+        resp = requests.get(url, headers=HEADERS, timeout=30)
+        resp.raise_for_status()
+        rows = resp.json()
+        if rows:
+            return date.fromisoformat(rows[0]["date"][:10])
+    except Exception:
+        pass
+    return None
+
 # ── EIA fetch (paginated) ─────────────────────────────────────────────────────
 def fetch_eia_prices(series_id: str, start: str, end: str) -> dict:
     result = {}
@@ -105,24 +118,28 @@ def fetch_wcs_prices() -> dict:
 
 # ── Frankfurter: fetch USD/CAD rate ──────────────────────────────────────────
 def fetch_usdcad_rate() -> float:
-    """Fetch latest USD/CAD rate from Frankfurter (free, no API key)."""
     try:
         resp = requests.get("https://api.frankfurter.dev/v1/latest?base=USD&symbols=CAD", timeout=60)
         resp.raise_for_status()
         return float(resp.json()["rates"]["CAD"])
     except Exception:
-        return 1.38  # fallback if API is unavailable
+        return 1.38
 
 # ── Sync ──────────────────────────────────────────────────────────────────────
-def sync_data():
+def sync_data(silent=False):
     existing = get_existing_dates()
     today = date.today().isoformat()
     start = "2015-01-01"
-    with st.spinner("Fetching WTI & Brent from EIA..."):
+    if silent:
         wti_data   = fetch_eia_prices("RWTC",  start, today)
         brent_data = fetch_eia_prices("RBRTE", start, today)
-    with st.spinner("Fetching WCS from Alberta Economic Dashboard..."):
-        wcs_data = fetch_wcs_prices()
+        wcs_data   = fetch_wcs_prices()
+    else:
+        with st.spinner("Fetching WTI & Brent from EIA..."):
+            wti_data   = fetch_eia_prices("RWTC",  start, today)
+            brent_data = fetch_eia_prices("RBRTE", start, today)
+        with st.spinner("Fetching WCS from Alberta Economic Dashboard..."):
+            wcs_data = fetch_wcs_prices()
     all_dates = set(wti_data) | set(brent_data)
     new_rows = []
     for d in sorted(all_dates):
@@ -135,12 +152,26 @@ def sync_data():
                 "wcs":   wcs_data.get(wcs_key),
             })
     if new_rows:
-        with st.spinner(f"Saving {len(new_rows)} rows to Supabase..."):
+        if silent:
             for i in range(0, len(new_rows), 500):
                 upsert_rows(new_rows[i:i+500])
-        st.success(f"✅ Added {len(new_rows)} new records.")
-    else:
+        else:
+            with st.spinner(f"Saving {len(new_rows)} rows to Supabase..."):
+                for i in range(0, len(new_rows), 500):
+                    upsert_rows(new_rows[i:i+500])
+            st.success(f"✅ Added {len(new_rows)} new records.")
+    elif not silent:
         st.info("✅ Already up to date.")
+
+# ── Weekly auto-sync (runs silently on app load) ──────────────────────────────
+def maybe_auto_sync():
+    """Silently sync if data is more than 7 days old (once per session)."""
+    if st.session_state.get("auto_sync_done"):
+        return
+    st.session_state["auto_sync_done"] = True
+    latest = get_latest_date_in_db()
+    if latest is None or (date.today() - latest).days > 7:
+        sync_data(silent=True)
 
 # ── Chart ─────────────────────────────────────────────────────────────────────
 def render_chart(df, start_date, end_date, benchmarks, fx_rate=1.0, currency='USD'):
@@ -171,20 +202,25 @@ def render_chart(df, start_date, end_date, benchmarks, fx_rate=1.0, currency='US
     )
     st.plotly_chart(fig, use_container_width=True, key="main_chart")
 
-# ── Safe metric helper ────────────────────────────────────────────────────────
-def show_metric(col, label, df, field, date_fmt="%b %d, %Y"):
+# ── Safe metric helper (now CAD-aware) ───────────────────────────────────────
+def show_metric(col, label, df, field, fx_rate=1.0, currency="USD", date_fmt="%b %d, %Y"):
     subset = df.dropna(subset=[field])
     if subset.empty:
         col.metric(label, "N/A", "No data yet")
     else:
         latest = subset.iloc[-1]
-        col.metric(label, f"${latest[field]:.2f}", f"as of {latest['date'].strftime(date_fmt)}")
+        price = latest[field] * fx_rate
+        sym = "CA$" if currency == "CAD" else "$"
+        col.metric(label, f"{sym}{price:.2f}", f"as of {latest['date'].strftime(date_fmt)}")
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 def main():
     st.set_page_config(page_title="Oil Price Dashboard", page_icon="🛢️", layout="wide")
     st.title("🛢️ Oil Price Dashboard")
     st.caption("WTI & Brent: daily via EIA API · WCS: monthly average via Alberta Economic Dashboard")
+
+    # ── Weekly auto-sync on load ──────────────────────────────────────────────
+    maybe_auto_sync()
 
     col1, col2 = st.columns([3, 1])
     with col2:
@@ -205,12 +241,12 @@ def main():
         st.warning("No data yet — click **Refresh Data** to load prices.")
         return
 
-    # Latest prices
+    # Latest prices (now CAD-aware)
     st.subheader("Latest Prices")
     m1, m2, m3 = st.columns(3)
-    show_metric(m1, "WTI",   df, "wti")
-    show_metric(m2, "Brent", df, "brent")
-    show_metric(m3, "WCS",   df, "wcs", date_fmt="%b %Y")
+    show_metric(m1, "WTI",   df, "wti",   fx_rate=fx_rate, currency=currency)
+    show_metric(m2, "Brent", df, "brent", fx_rate=fx_rate, currency=currency)
+    show_metric(m3, "WCS",   df, "wcs",   fx_rate=fx_rate, currency=currency, date_fmt="%b %Y")
 
     st.divider()
 
@@ -223,7 +259,6 @@ def main():
 
     benchmarks = st.multiselect("Benchmarks", ["wti", "brent", "wcs"], default=["wti", "brent", "wcs"])
 
-    # Date range slider
     st.markdown("**Adjust Date Range**")
     slider_range = st.slider(
         label="Date Range",
