@@ -177,7 +177,7 @@ def maybe_auto_sync():
 def render_chart(df, start_date, end_date, benchmarks, fx_rate=1.0, currency='USD'):
     mask = (df["date"] >= pd.Timestamp(start_date)) & (df["date"] <= pd.Timestamp(end_date))
     filtered = df[mask]
-    colors = {"wti": "#F4A261", "brent": "#2A9D8F", "wcs": "#E76F51"}
+    colors = {"wti": "#3b9fb3", "brent": "#af3bb3", "wcs": "#E76F51"}
     labels = {"wti": "WTI", "brent": "Brent", "wcs": "WCS (monthly avg)"}
     fig = go.Figure()
     sym = "CA$" if currency == "CAD" else "$"
