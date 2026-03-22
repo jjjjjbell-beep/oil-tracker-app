@@ -99,7 +99,7 @@ def fetch_eia_prices(series_id: str, start: str, end: str) -> dict:
 
 # ── Alberta WCS fetch ─────────────────────────────────────────────────────────
 def fetch_wcs_prices() -> dict:
-    url = "https://economicdashboard.alberta.ca/api/oilprice?type=wcs"
+    url = "https://api.economicdata.alberta.ca/api/oilprice?type=wcs"
     try:
         resp = requests.get(url, timeout=60)
         resp.raise_for_status()
