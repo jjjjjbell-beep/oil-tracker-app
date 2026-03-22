@@ -190,9 +190,15 @@ def render_chart(df, start_date, end_date, benchmarks, fx_rate=1.0, currency='US
             line=dict(color=colors[b], width=2),
             hovertemplate=f"<b>{labels[b]}</b><br>Date: %{{x|%b %d, %Y}}<br>Price: {sym}%{{y:.2f}}/bbl<extra></extra>"
         ))
-      fig.update_layout(
-        ...
-        plot_bgcolor="white", paper_bgcolor="white",
+    fig.update_layout(
+        title=f"Oil Benchmark Prices ({currency}/bbl)",
+        title_font=dict(color="#333333"),
+        xaxis_title="Date",
+        yaxis_title=f"Price ({currency}/bbl)",
+        hovermode="x unified",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        plot_bgcolor="white",
+        paper_bgcolor="white",
         font=dict(color="#333333"),
         xaxis=dict(
             gridcolor="#DDDDDD",
@@ -206,12 +212,11 @@ def render_chart(df, start_date, end_date, benchmarks, fx_rate=1.0, currency='US
             tickfont=dict(color="#333333"),
             title_font=dict(color="#333333"),
         ),
-        title_font=dict(color="#333333"),
-        ...
+        height=500,
     )
     st.plotly_chart(fig, use_container_width=True, key="main_chart")
 
-# ── Safe metric helper (now CAD-aware) ───────────────────────────────────────
+# ── Safe metric helper (CAD-aware) ────────────────────────────────────────────
 def show_metric(col, label, df, field, fx_rate=1.0, currency="USD", date_fmt="%b %d, %Y"):
     subset = df.dropna(subset=[field])
     if subset.empty:
@@ -250,7 +255,7 @@ def main():
         st.warning("No data yet — click **Refresh Data** to load prices.")
         return
 
-    # Latest prices (now CAD-aware)
+    # Latest prices (CAD-aware)
     st.subheader("Latest Prices")
     m1, m2, m3 = st.columns(3)
     show_metric(m1, "WTI",   df, "wti",   fx_rate=fx_rate, currency=currency)
@@ -305,12 +310,20 @@ def main():
             ))
             fig2.update_layout(
                 title="WTI–WCS Monthly Differential (USD/bbl)",
-                plot_bgcolor="white", paper_bgcolor="white",
-        font=dict(color="#333333"),
-        xaxis=dict(gridcolor="#DDDDDD", linecolor="#333333",
-                   tickfont=dict(color="#333333")),
-        yaxis=dict(gridcolor="#DDDDDD", linecolor="#333333",
-                   tickfont=dict(color="#333333")),
+                title_font=dict(color="#333333"),
+                plot_bgcolor="white",
+                paper_bgcolor="white",
+                font=dict(color="#333333"),
+                xaxis=dict(
+                    gridcolor="#DDDDDD",
+                    linecolor="#333333",
+                    tickfont=dict(color="#333333"),
+                ),
+                yaxis=dict(
+                    gridcolor="#DDDDDD",
+                    linecolor="#333333",
+                    tickfont=dict(color="#333333"),
+                ),
                 height=350,
             )
             st.plotly_chart(fig2, use_container_width=True, key="diff_chart")
