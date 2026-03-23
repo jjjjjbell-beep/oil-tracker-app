@@ -100,26 +100,18 @@ def fetch_wcs_prices() -> dict:
     url = "https://api.economicdata.alberta.ca/data?table=OilPrices"
     try:
         resp = requests.get(url, timeout=60)
-        st.write(f"🔍 Status code: {resp.status_code}")
-        raw = resp.json()
-        st.write(f"🔍 Total rows returned: {len(raw)}")
-        if raw:
-            st.write(f"🔍 First row sample: {raw[0]}")
-        wcs_rows = [e for e in raw if e.get("Type ", "").strip() == "WCS"]
-        st.write(f"🔍 WCS rows found: {len(wcs_rows)}")
-        if wcs_rows:
-            st.write(f"🔍 First WCS row: {wcs_rows[0]}")
+        resp.raise_for_status()
         result = {}
-        for entry in wcs_rows:
-            raw_date = entry.get("Date", "")
-            price = entry.get("Value")
-            if raw_date and price is not None:
-                d = raw_date[:10]
-                result[d] = float(price)
-        st.write(f"🔍 Final parsed WCS entries: {len(result)}")
+        for entry in resp.json():
+            if entry.get("Type ", "").strip() == "WCS":
+                raw_date = entry.get("Date", "")
+                price = entry.get("Value")
+                if raw_date and price is not None:
+                    d = raw_date[:10]
+                    result[d] = float(price)
         return result
     except Exception as e:
-        st.error(f"WCS fetch failed: {e}")
+        st.warning(f"WCS fetch failed: {e}")
         return {}
 
 # ── Frankfurter: fetch USD/CAD rate ──────────────────────────────────────────
