@@ -105,7 +105,7 @@ def fetch_wcs_prices() -> dict:
         st.write(f"🔍 Total rows returned: {len(raw)}")
         if raw:
             st.write(f"🔍 First row sample: {raw[0]}")
-        wcs_rows = [e for e in raw if e.get("Type", "").strip() == "WCS"]
+        wcs_rows = [e for e in raw if e.get("Type ", "").strip() == "WCS"]
         st.write(f"🔍 WCS rows found: {len(wcs_rows)}")
         if wcs_rows:
             st.write(f"🔍 First WCS row: {wcs_rows[0]}")
