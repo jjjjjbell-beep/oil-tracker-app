@@ -151,12 +151,13 @@ for d in sorted(all_dates):
         })
 
     
-    # Also update existing rows that have null WCS
-    wcs_update_rows = []
-    for d, v in wcs_data.items():
-        full_key = d  # already "YYYY-MM-01"
-        if full_key in existing:
-            wcs_update_rows.append({"date": full_key, "wcs": v})
+
+wcs_update_rows = []
+for d, v in wcs_data.items():
+    if d in existing:
+        wcs_update_rows.append({"date": d, "wcs": v})
+
+    
     if wcs_update_rows and not silent:
         with st.spinner(f"Updating {len(wcs_update_rows)} WCS values..."):
             for i in range(0, len(wcs_update_rows), 500):
@@ -190,7 +191,7 @@ def render_chart(df, start_date, end_date, benchmarks, fx_rate=1.0, currency='US
     mask = (df["date"] >= pd.Timestamp(start_date)) & (df["date"] <= pd.Timestamp(end_date))
     filtered = df[mask]
     colors = {"wti": "#F4A261", "brent": "#2A9D8F", "wcs": "#E76F51"}
-    labels = {"wti": "WTI", "brent": "Brent", "wcs": "WCS (monthly avg)"}
+    labels = {"wti": "WTI", "brent": "Brent", "wcs": "WCS"}
     fig = go.Figure()
     sym = "CA$" if currency == "CAD" else "$"
     for b in benchmarks:
