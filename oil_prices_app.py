@@ -96,6 +96,7 @@ def fetch_eia_prices(series_id: str, start: str, end: str) -> dict:
             break
     return result
 
+# ── Alberta WCS fetch (fixed endpoint) ───────────────────────────────────────
 def fetch_wcs_prices() -> dict:
     url = "https://api.economicdata.alberta.ca/data?table=OilPrices"
     try:
@@ -139,25 +140,22 @@ def sync_data(silent=False):
         with st.spinner("Fetching WCS from Alberta Economic Dashboard..."):
             wcs_data = fetch_wcs_prices()
 
-all_dates = set(wti_data) | set(brent_data) | set(wcs_data)
-new_rows = []
-for d in sorted(all_dates):
-    if d not in existing:
-        new_rows.append({
-            "date":  d,
-            "wti":   wti_data.get(d),
-            "brent": brent_data.get(d),
-            "wcs":   wcs_data.get(d),
-        })
+    all_dates = set(wti_data) | set(brent_data) | set(wcs_data)
+    new_rows = []
+    for d in sorted(all_dates):
+        if d not in existing:
+            new_rows.append({
+                "date":  d,
+                "wti":   wti_data.get(d),
+                "brent": brent_data.get(d),
+                "wcs":   wcs_data.get(d),
+            })
 
-    
+    wcs_update_rows = []
+    for d, v in wcs_data.items():
+        if d in existing:
+            wcs_update_rows.append({"date": d, "wcs": v})
 
-wcs_update_rows = []
-for d, v in wcs_data.items():
-    if d in existing:
-        wcs_update_rows.append({"date": d, "wcs": v})
-
-    
     if wcs_update_rows and not silent:
         with st.spinner(f"Updating {len(wcs_update_rows)} WCS values..."):
             for i in range(0, len(wcs_update_rows), 500):
@@ -165,6 +163,7 @@ for d, v in wcs_data.items():
     elif wcs_update_rows:
         for i in range(0, len(wcs_update_rows), 500):
             upsert_rows(wcs_update_rows[i:i+500])
+
     if new_rows:
         if silent:
             for i in range(0, len(new_rows), 500):
@@ -244,7 +243,7 @@ def show_metric(col, label, df, field, fx_rate=1.0, currency="USD", date_fmt="%b
 def main():
     st.set_page_config(page_title="Oil Price Dashboard", page_icon="🛢️", layout="wide")
     st.title("🛢️ Oil Price Dashboard")
-    st.caption("WTI & Brent: daily via EIA API · WCS: monthly average via Alberta Economic Dashboard")
+    st.caption("WTI & Brent: daily via EIA API · WCS: daily via Alberta Economic Dashboard")
 
     maybe_auto_sync()
 
@@ -270,7 +269,7 @@ def main():
     m1, m2, m3 = st.columns(3)
     show_metric(m1, "WTI",   df, "wti",   fx_rate=fx_rate, currency=currency)
     show_metric(m2, "Brent", df, "brent", fx_rate=fx_rate, currency=currency)
-    show_metric(m3, "WCS",   df, "wcs",   fx_rate=fx_rate, currency=currency, date_fmt="%b %Y")
+    show_metric(m3, "WCS",   df, "wcs",   fx_rate=fx_rate, currency=currency)
 
     st.divider()
 
@@ -325,7 +324,7 @@ def main():
                 yaxis=dict(gridcolor="#DDDDDD", linecolor="#333333", tickfont=dict(color="#333333")),
                 height=350,
             )
-            st.plotly_chart(fig2, use_container_width=True, key="diff_chart")
+            st.plotly_chart(fig2, use_container_chart=True, key="diff_chart")
 
     with st.expander("📋 View / Download Raw Data"):
         display_df = df.copy()
