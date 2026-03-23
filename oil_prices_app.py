@@ -138,17 +138,19 @@ def sync_data(silent=False):
             brent_data = fetch_eia_prices("RBRTE", start, today)
         with st.spinner("Fetching WCS from Alberta Economic Dashboard..."):
             wcs_data = fetch_wcs_prices()
-    all_dates = set(wti_data) | set(brent_data)
-    new_rows = []
-    for d in sorted(all_dates):
-        if d not in existing:
-            wcs_key = d[:7] + "-01"
-            new_rows.append({
-                "date":  d,
-                "wti":   wti_data.get(d),
-                "brent": brent_data.get(d),
-                "wcs":   wcs_data.get(wcs_key),
-            })
+
+all_dates = set(wti_data) | set(brent_data) | set(wcs_data)
+new_rows = []
+for d in sorted(all_dates):
+    if d not in existing:
+        new_rows.append({
+            "date":  d,
+            "wti":   wti_data.get(d),
+            "brent": brent_data.get(d),
+            "wcs":   wcs_data.get(d),
+        })
+
+    
     # Also update existing rows that have null WCS
     wcs_update_rows = []
     for d, v in wcs_data.items():
