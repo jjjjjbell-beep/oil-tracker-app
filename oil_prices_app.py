@@ -99,15 +99,15 @@ def fetch_eia_prices(series_id: str, start: str, end: str) -> dict:
 
 # ── Alberta WCS fetch ─────────────────────────────────────────────────────────
 def fetch_wcs_prices() -> dict:
-    url = "https://api.economicdata.alberta.ca/api/oilprice?type=wcs"
+    url = "https://api.economicdata.alberta.ca/data?table=OilPrices"
     try:
         resp = requests.get(url, timeout=60)
         resp.raise_for_status()
         result = {}
         for entry in resp.json():
-            y = entry.get("year")
-            m = entry.get("month")
-            p = entry.get("price") or entry.get("value")
+            y = entry.get("Year") or entry.get("year")
+            m = entry.get("Month") or entry.get("month")
+            p = entry.get("WCS") or entry.get("wcs") or entry.get("Price") or entry.get("price")
             if y and m and p:
                 d = date(int(y), int(m), 1).isoformat()
                 result[d] = float(p)
