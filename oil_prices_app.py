@@ -57,7 +57,6 @@ def load_all_data() -> pd.DataFrame:
     return df
 
 def get_latest_date_in_db() -> date | None:
-    """Return the most recent date stored in Supabase, or None if empty."""
     url = f"{SUPABASE_URL}/rest/v1/oil_prices?select=date&order=date.desc&limit=1"
     try:
         resp = requests.get(url, headers=HEADERS, timeout=30)
@@ -97,7 +96,7 @@ def fetch_eia_prices(series_id: str, start: str, end: str) -> dict:
             break
     return result
 
-# ── Alberta WCS fetch ─────────────────────────────────────────────────────────
+# ── Alberta WCS fetch (fixed endpoint) ───────────────────────────────────────
 def fetch_wcs_prices() -> dict:
     url = "https://api.economicdata.alberta.ca/data?table=OilPrices"
     try:
@@ -105,12 +104,12 @@ def fetch_wcs_prices() -> dict:
         resp.raise_for_status()
         result = {}
         for entry in resp.json():
-            y = entry.get("Year") or entry.get("year")
-            m = entry.get("Month") or entry.get("month")
-            p = entry.get("WCS") or entry.get("wcs") or entry.get("Price") or entry.get("price")
-            if y and m and p:
-                d = date(int(y), int(m), 1).isoformat()
-                result[d] = float(p)
+            if entry.get("Type", "").strip() == "WCS":
+                raw_date = entry.get("Date", "")
+                price = entry.get("Value")
+                if raw_date and price is not None:
+                    d = raw_date[:10]  # "1986-01-01T00:00:00" → "1986-01-01"
+                    result[d] = float(price)
         return result
     except Exception as e:
         st.warning(f"WCS fetch failed: {e}")
@@ -151,6 +150,19 @@ def sync_data(silent=False):
                 "brent": brent_data.get(d),
                 "wcs":   wcs_data.get(wcs_key),
             })
+    # Also update existing rows that have null WCS
+    wcs_update_rows = []
+    for d, v in wcs_data.items():
+        full_key = d  # already "YYYY-MM-01"
+        if full_key in existing:
+            wcs_update_rows.append({"date": full_key, "wcs": v})
+    if wcs_update_rows and not silent:
+        with st.spinner(f"Updating {len(wcs_update_rows)} WCS values..."):
+            for i in range(0, len(wcs_update_rows), 500):
+                upsert_rows(wcs_update_rows[i:i+500])
+    elif wcs_update_rows:
+        for i in range(0, len(wcs_update_rows), 500):
+            upsert_rows(wcs_update_rows[i:i+500])
     if new_rows:
         if silent:
             for i in range(0, len(new_rows), 500):
@@ -165,7 +177,6 @@ def sync_data(silent=False):
 
 # ── Weekly auto-sync (runs silently on app load) ──────────────────────────────
 def maybe_auto_sync():
-    """Silently sync if data is more than 7 days old (once per session)."""
     if st.session_state.get("auto_sync_done"):
         return
     st.session_state["auto_sync_done"] = True
@@ -177,7 +188,7 @@ def maybe_auto_sync():
 def render_chart(df, start_date, end_date, benchmarks, fx_rate=1.0, currency='USD'):
     mask = (df["date"] >= pd.Timestamp(start_date)) & (df["date"] <= pd.Timestamp(end_date))
     filtered = df[mask]
-    colors = {"wti": "#3b9fb3", "brent": "#af3bb3", "wcs": "#E76F51"}
+    colors = {"wti": "#F4A261", "brent": "#2A9D8F", "wcs": "#E76F51"}
     labels = {"wti": "WTI", "brent": "Brent", "wcs": "WCS (monthly avg)"}
     fig = go.Figure()
     sym = "CA$" if currency == "CAD" else "$"
@@ -233,7 +244,6 @@ def main():
     st.title("🛢️ Oil Price Dashboard")
     st.caption("WTI & Brent: daily via EIA API · WCS: monthly average via Alberta Economic Dashboard")
 
-    # ── Weekly auto-sync on load ──────────────────────────────────────────────
     maybe_auto_sync()
 
     col1, col2 = st.columns([3, 1])
@@ -242,7 +252,6 @@ def main():
             sync_data()
             st.rerun()
 
-    # Currency toggle
     currency = st.radio("Currency", ["USD", "CAD"], horizontal=True)
     fx_rate = 1.0
     if currency == "CAD":
@@ -255,7 +264,6 @@ def main():
         st.warning("No data yet — click **Refresh Data** to load prices.")
         return
 
-    # Latest prices (CAD-aware)
     st.subheader("Latest Prices")
     m1, m2, m3 = st.columns(3)
     show_metric(m1, "WTI",   df, "wti",   fx_rate=fx_rate, currency=currency)
@@ -264,9 +272,7 @@ def main():
 
     st.divider()
 
-    # Chart controls
     st.subheader("Historical Chart")
-
     min_date = df["date"].min().date()
     max_date = df["date"].max().date()
     default_start = max(min_date, max_date - timedelta(days=365))
@@ -289,7 +295,6 @@ def main():
     else:
         st.info("Select at least one benchmark above.")
 
-    # WTI-WCS differential
     if "wti" in benchmarks and "wcs" in benchmarks:
         wcs_available = df.dropna(subset=["wcs"])
         if not wcs_available.empty:
@@ -314,21 +319,12 @@ def main():
                 plot_bgcolor="white",
                 paper_bgcolor="white",
                 font=dict(color="#333333"),
-                xaxis=dict(
-                    gridcolor="#DDDDDD",
-                    linecolor="#333333",
-                    tickfont=dict(color="#333333"),
-                ),
-                yaxis=dict(
-                    gridcolor="#DDDDDD",
-                    linecolor="#333333",
-                    tickfont=dict(color="#333333"),
-                ),
+                xaxis=dict(gridcolor="#DDDDDD", linecolor="#333333", tickfont=dict(color="#333333")),
+                yaxis=dict(gridcolor="#DDDDDD", linecolor="#333333", tickfont=dict(color="#333333")),
                 height=350,
             )
             st.plotly_chart(fig2, use_container_width=True, key="diff_chart")
 
-    # Raw data + download
     with st.expander("📋 View / Download Raw Data"):
         display_df = df.copy()
         display_df["date"] = display_df["date"].dt.strftime("%Y-%m-%d")
