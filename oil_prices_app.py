@@ -104,11 +104,11 @@ def fetch_wcs_prices() -> dict:
         resp.raise_for_status()
         result = {}
         for entry in resp.json():
-            if entry.get("Type ", "").strip() == "WCS":
+            if entry.get("Type", "").strip() == "WCS":
                 raw_date = entry.get("Date", "")
                 price = entry.get("Value")
                 if raw_date and price is not None:
-                    d = raw_date[:10]
+                    d = raw_date[:10]  # "1986-01-01T00:00:00" → "1986-01-01"
                     result[d] = float(price)
         return result
     except Exception as e:
@@ -139,23 +139,23 @@ def sync_data(silent=False):
             brent_data = fetch_eia_prices("RBRTE", start, today)
         with st.spinner("Fetching WCS from Alberta Economic Dashboard..."):
             wcs_data = fetch_wcs_prices()
-
-    all_dates = set(wti_data) | set(brent_data) | set(wcs_data)
+    all_dates = set(wti_data) | set(brent_data)
     new_rows = []
     for d in sorted(all_dates):
         if d not in existing:
+            wcs_key = d[:7] + "-01"
             new_rows.append({
                 "date":  d,
                 "wti":   wti_data.get(d),
                 "brent": brent_data.get(d),
-                "wcs":   wcs_data.get(d),
+                "wcs":   wcs_data.get(wcs_key),
             })
-
+    # Also update existing rows that have null WCS
     wcs_update_rows = []
     for d, v in wcs_data.items():
-        if d in existing:
-            wcs_update_rows.append({"date": d, "wcs": v})
-
+        full_key = d  # already "YYYY-MM-01"
+        if full_key in existing:
+            wcs_update_rows.append({"date": full_key, "wcs": v})
     if wcs_update_rows and not silent:
         with st.spinner(f"Updating {len(wcs_update_rows)} WCS values..."):
             for i in range(0, len(wcs_update_rows), 500):
@@ -163,7 +163,6 @@ def sync_data(silent=False):
     elif wcs_update_rows:
         for i in range(0, len(wcs_update_rows), 500):
             upsert_rows(wcs_update_rows[i:i+500])
-
     if new_rows:
         if silent:
             for i in range(0, len(new_rows), 500):
@@ -185,23 +184,77 @@ def maybe_auto_sync():
     if latest is None or (date.today() - latest).days > 7:
         sync_data(silent=True)
 
+# ── Hover helper: previous date current price was this high/low ──────────────
+def add_last_high_low_dates(df: pd.DataFrame, price_col: str) -> pd.DataFrame:
+    temp = df[["date", price_col]].copy().sort_values("date")
+    last_high_dates = []
+    last_low_dates = []
+
+    for i in range(len(temp)):
+        current_price = temp.iloc[i][price_col]
+
+        if pd.isna(current_price):
+            last_high_dates.append("N/A")
+            last_low_dates.append("N/A")
+            continue
+
+        prev = temp.iloc[:i]
+
+        prev_high = prev.loc[prev[price_col] >= current_price, "date"]
+        prev_low  = prev.loc[prev[price_col] <= current_price, "date"]
+
+        last_high_dates.append(
+            prev_high.iloc[-1].strftime("%b %d, %Y") if not prev_high.empty else "Never before"
+        )
+        last_low_dates.append(
+            prev_low.iloc[-1].strftime("%b %d, %Y") if not prev_low.empty else "Never before"
+        )
+
+    temp[f"{price_col}_last_high_date"] = last_high_dates
+    temp[f"{price_col}_last_low_date"] = last_low_dates
+    return temp
+
 # ── Chart ─────────────────────────────────────────────────────────────────────
 def render_chart(df, start_date, end_date, benchmarks, fx_rate=1.0, currency='USD'):
     mask = (df["date"] >= pd.Timestamp(start_date)) & (df["date"] <= pd.Timestamp(end_date))
-    filtered = df[mask]
+    filtered = df.loc[mask].copy()
+
     colors = {"wti": "#F4A261", "brent": "#2A9D8F", "wcs": "#E76F51"}
-    labels = {"wti": "WTI", "brent": "Brent", "wcs": "WCS"}
+    labels = {"wti": "WTI", "brent": "Brent", "wcs": "WCS (monthly avg)"}
+
     fig = go.Figure()
     sym = "CA$" if currency == "CAD" else "$"
+
     for b in benchmarks:
-        col_data = (filtered[b] * fx_rate).dropna()
+        series_df = add_last_high_low_dates(filtered, b)
+        series_df = series_df.dropna(subset=[b]).copy()
+
+        if series_df.empty:
+            continue
+
+        y_vals = series_df[b] * fx_rate
+
+        customdata = pd.DataFrame({
+            "last_high": series_df[f"{b}_last_high_date"],
+            "last_low": series_df[f"{b}_last_low_date"],
+        }).to_numpy()
+
         fig.add_trace(go.Scatter(
-            x=filtered.loc[col_data.index, "date"],
-            y=col_data,
+            x=series_df["date"],
+            y=y_vals,
             name=labels[b],
             line=dict(color=colors[b], width=2),
-            hovertemplate=f"<b>{labels[b]}</b><br>Date: %{{x|%b %d, %Y}}<br>Price: {sym}%{{y:.2f}}/bbl<extra></extra>"
+            customdata=customdata,
+            hovertemplate=(
+                f"<b>{labels[b]}</b><br>"
+                "Date: %{x|%b %d, %Y}<br>"
+                f"Price: {sym}%{{y:.2f}}/bbl<br>"
+                "Last date price was this high: %{customdata[0]}<br>"
+                "Last date price was this low: %{customdata[1]}"
+                "<extra></extra>"
+            )
         ))
+
     fig.update_layout(
         title=f"Oil Benchmark Prices ({currency}/bbl)",
         title_font=dict(color="#333333"),
@@ -226,6 +279,7 @@ def render_chart(df, start_date, end_date, benchmarks, fx_rate=1.0, currency='US
         ),
         height=500,
     )
+
     st.plotly_chart(fig, use_container_width=True, key="main_chart")
 
 # ── Safe metric helper (CAD-aware) ────────────────────────────────────────────
@@ -243,7 +297,7 @@ def show_metric(col, label, df, field, fx_rate=1.0, currency="USD", date_fmt="%b
 def main():
     st.set_page_config(page_title="Oil Price Dashboard", page_icon="🛢️", layout="wide")
     st.title("🛢️ Oil Price Dashboard")
-    st.caption("WTI & Brent: daily via EIA API · WCS: daily via Alberta Economic Dashboard")
+    st.caption("WTI & Brent: daily via EIA API · WCS: monthly average via Alberta Economic Dashboard")
 
     maybe_auto_sync()
 
@@ -269,7 +323,7 @@ def main():
     m1, m2, m3 = st.columns(3)
     show_metric(m1, "WTI",   df, "wti",   fx_rate=fx_rate, currency=currency)
     show_metric(m2, "Brent", df, "brent", fx_rate=fx_rate, currency=currency)
-    show_metric(m3, "WCS",   df, "wcs",   fx_rate=fx_rate, currency=currency)
+    show_metric(m3, "WCS",   df, "wcs",   fx_rate=fx_rate, currency=currency, date_fmt="%b %Y")
 
     st.divider()
 
@@ -324,7 +378,7 @@ def main():
                 yaxis=dict(gridcolor="#DDDDDD", linecolor="#333333", tickfont=dict(color="#333333")),
                 height=350,
             )
-            st.plotly_chart(fig2, use_container_chart=True, key="diff_chart")
+            st.plotly_chart(fig2, use_container_width=True, key="diff_chart")
 
     with st.expander("📋 View / Download Raw Data"):
         display_df = df.copy()
