@@ -303,12 +303,12 @@ def main():
 
   #  maybe_auto_sync()
 
-    col1, col2 = st.columns([3, 1])
+col1, col2 = st.columns([3, 1])
     
-   with col2:
+with col2:
     st.caption("Data updates are managed separately.")
-
-    currency = st.radio("Currency", ["USD", "CAD"], horizontal=True)
+       
+currency = st.radio("Currency", ["USD", "CAD"], horizontal=True)
     fx_rate = 1.0
     if currency == "CAD":
         fx_rate = fetch_usdcad_rate()
