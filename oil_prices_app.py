@@ -304,6 +304,7 @@ def main():
   #  maybe_auto_sync()
 
     col1, col2 = st.columns([3, 1])
+    
    with col2:
     st.caption("Data updates are managed separately.")
 
