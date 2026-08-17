@@ -296,35 +296,71 @@ def show_metric(col, label, df, field, fx_rate=1.0, currency="USD", date_fmt="%b
         col.metric(label, f"{sym}{price:.2f}", f"as of {latest['date'].strftime(date_fmt)}")
 
 # ── Main ──────────────────────────────────────────────────────────────────────
+# ── Main ──────────────────────────────────────────────────────────────────────
 def main():
-    st.set_page_config(page_title="Oil Price Dashboard", page_icon="🛢️", layout="wide")
+    st.set_page_config(
+        page_title="Oil Price Dashboard",
+        page_icon="🛢️",
+        layout="wide",
+    )
     st.title("🛢️ Oil Price Dashboard")
-    st.caption("WTI & Brent: daily via EIA API · WCS: monthly average via Alberta Economic Dashboard")
+    st.caption(
+        "WTI & Brent: daily via EIA API · "
+        "WCS: monthly average via Alberta Economic Dashboard"
+    )
 
-  #  maybe_auto_sync()
+    # Intentionally disabled while the public dashboard is read-only.
+    # maybe_auto_sync()
 
-col1, col2 = st.columns([3, 1])
-    
-with col2:
-    st.caption("Data updates are managed separately.")
-       
-currency = st.radio("Currency", ["USD", "CAD"], horizontal=True)
-fx_rate = 1.0
-if currency == "CAD":
+    col1, col2 = st.columns([3, 1])
+
+    with col2:
+        st.caption("Data updates are managed separately.")
+
+    currency = st.radio("Currency", ["USD", "CAD"], horizontal=True)
+
+    fx_rate = 1.0
+    if currency == "CAD":
         fx_rate = fetch_usdcad_rate()
-        st.caption(f"💱 Using USD/CAD rate: {fx_rate:.4f} (via Frankfurter, updated daily)")
+        st.caption(
+            f"💱 Using USD/CAD rate: {fx_rate:.4f} "
+            "(via Frankfurter, updated daily)"
+        )
 
     df = load_all_data()
 
     if df.empty:
-        st.warning("No data yet — click **Refresh Data** to load prices.")
+        st.warning("No data available.")
         return
 
     st.subheader("Latest Prices")
     m1, m2, m3 = st.columns(3)
-    show_metric(m1, "WTI",   df, "wti",   fx_rate=fx_rate, currency=currency)
-    show_metric(m2, "Brent", df, "brent", fx_rate=fx_rate, currency=currency)
-    show_metric(m3, "WCS",   df, "wcs",   fx_rate=fx_rate, currency=currency, date_fmt="%b %Y")
+
+    show_metric(
+        m1,
+        "WTI",
+        df,
+        "wti",
+        fx_rate=fx_rate,
+        currency=currency,
+    )
+    show_metric(
+        m2,
+        "Brent",
+        df,
+        "brent",
+        fx_rate=fx_rate,
+        currency=currency,
+    )
+    show_metric(
+        m3,
+        "WCS",
+        df,
+        "wcs",
+        fx_rate=fx_rate,
+        currency=currency,
+        date_fmt="%b %Y",
+    )
 
     st.divider()
 
@@ -333,7 +369,11 @@ if currency == "CAD":
     max_date = df["date"].max().date()
     default_start = max(min_date, max_date - timedelta(days=365))
 
-    benchmarks = st.multiselect("Benchmarks", ["wti", "brent", "wcs"], default=["wti", "brent", "wcs"])
+    benchmarks = st.multiselect(
+        "Benchmarks",
+        ["wti", "brent", "wcs"],
+        default=["wti", "brent", "wcs"],
+    )
 
     st.markdown("**Adjust Date Range**")
     slider_range = st.slider(
@@ -342,51 +382,105 @@ if currency == "CAD":
         max_value=max_date,
         value=(default_start, max_date),
         format="YYYY-MM-DD",
-        label_visibility="collapsed"
+        label_visibility="collapsed",
     )
-    start_date, end_date = slider_range[0], slider_range[1]
+
+    start_date, end_date = slider_range
 
     if benchmarks:
-        render_chart(df, start_date, end_date, benchmarks, fx_rate, currency)
+        render_chart(
+            df,
+            start_date,
+            end_date,
+            benchmarks,
+            fx_rate,
+            currency,
+        )
     else:
         st.info("Select at least one benchmark above.")
 
     if "wti" in benchmarks and "wcs" in benchmarks:
         wcs_available = df.dropna(subset=["wcs"])
+
         if not wcs_available.empty:
             st.subheader("WTI–WCS Differential")
+
             diff_df = wcs_available.copy()
             diff_df["month"] = diff_df["date"].dt.to_period("M")
+
             wti_monthly = df.copy()
             wti_monthly["month"] = wti_monthly["date"].dt.to_period("M")
-            wti_avg = wti_monthly.groupby("month")["wti"].mean().reset_index()
-            merged = diff_df[["month","wcs"]].drop_duplicates("month").merge(wti_avg, on="month")
+
+            wti_avg = (
+                wti_monthly.groupby("month")["wti"]
+                .mean()
+                .reset_index()
+            )
+
+            merged = (
+                diff_df[["month", "wcs"]]
+                .drop_duplicates("month")
+                .merge(wti_avg, on="month")
+            )
+
             merged["differential"] = merged["wti"] - merged["wcs"]
             merged["date"] = merged["month"].dt.to_timestamp()
+
             fig2 = go.Figure()
-            fig2.add_trace(go.Bar(
-                x=merged["date"], y=merged["differential"],
-                name="WTI–WCS Differential", marker_color="#E76F51",
-                hovertemplate="<b>Differential</b><br>%{x|%b %Y}<br>$%{y:.2f}/bbl<extra></extra>"
-            ))
+
+            fig2.add_trace(
+                go.Bar(
+                    x=merged["date"],
+                    y=merged["differential"],
+                    name="WTI–WCS Differential",
+                    marker_color="#E76F51",
+                    hovertemplate=(
+                        "<b>Differential</b><br>"
+                        "%{x|%b %Y}<br>"
+                        "$%{y:.2f}/bbl"
+                        "<extra></extra>"
+                    ),
+                )
+            )
+
             fig2.update_layout(
                 title="WTI–WCS Monthly Differential (USD/bbl)",
                 title_font=dict(color="#333333"),
                 plot_bgcolor="white",
                 paper_bgcolor="white",
                 font=dict(color="#333333"),
-                xaxis=dict(gridcolor="#DDDDDD", linecolor="#333333", tickfont=dict(color="#333333")),
-                yaxis=dict(gridcolor="#DDDDDD", linecolor="#333333", tickfont=dict(color="#333333")),
+                xaxis=dict(
+                    gridcolor="#DDDDDD",
+                    linecolor="#333333",
+                    tickfont=dict(color="#333333"),
+                ),
+                yaxis=dict(
+                    gridcolor="#DDDDDD",
+                    linecolor="#333333",
+                    tickfont=dict(color="#333333"),
+                ),
                 height=350,
             )
-            st.plotly_chart(fig2, use_container_width=True, key="diff_chart")
+
+            st.plotly_chart(
+                fig2,
+                use_container_width=True,
+                key="diff_chart",
+            )
 
     with st.expander("📋 View / Download Raw Data"):
         display_df = df.copy()
         display_df["date"] = display_df["date"].dt.strftime("%Y-%m-%d")
+
         st.dataframe(display_df, use_container_width=True)
+
         csv = display_df.to_csv(index=False).encode("utf-8")
-        st.download_button("⬇️ Download CSV", csv, "oil_prices.csv", "text/csv")
+        st.download_button(
+            "⬇️ Download CSV",
+            csv,
+            "oil_prices.csv",
+            "text/csv",
+        )
 
 if __name__ == "__main__":
     main()
