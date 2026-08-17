@@ -301,13 +301,11 @@ def main():
     st.title("🛢️ Oil Price Dashboard")
     st.caption("WTI & Brent: daily via EIA API · WCS: monthly average via Alberta Economic Dashboard")
 
-    maybe_auto_sync()
+  #  maybe_auto_sync()
 
     col1, col2 = st.columns([3, 1])
-    with col2:
-        if st.button("🔄 Refresh Data", use_container_width=True):
-            sync_data()
-            st.rerun()
+   with col2:
+    st.caption("Data updates are managed separately.")
 
     currency = st.radio("Currency", ["USD", "CAD"], horizontal=True)
     fx_rate = 1.0
