@@ -309,7 +309,7 @@ with col2:
     st.caption("Data updates are managed separately.")
        
 currency = st.radio("Currency", ["USD", "CAD"], horizontal=True)
-    fx_rate = 1.0
+fx_rate = 1.0
     if currency == "CAD":
         fx_rate = fetch_usdcad_rate()
         st.caption(f"💱 Using USD/CAD rate: {fx_rate:.4f} (via Frankfurter, updated daily)")
