@@ -16,6 +16,8 @@ HEADERS = {
     "apikey": SUPABASE_KEY,
     "Authorization": f"Bearer {SUPABASE_KEY}",
     "Content-Type": "application/json",
+    "Accept-Profile": "oil",
+    "Content-Profile": "oil",
 }
 
 # ── Supabase REST helpers ─────────────────────────────────────────────────────
@@ -389,3 +391,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+               
